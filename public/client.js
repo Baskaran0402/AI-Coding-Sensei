@@ -4,6 +4,7 @@ require.config({
   },
 });
 require(["vs/editor/editor.main"], function () {
+  const editorView = document.querySelector(".editor-view");
   const userEditor = monaco.editor.create(
     document.getElementById("user-editor"),
     {
@@ -20,36 +21,89 @@ require(["vs/editor/editor.main"], function () {
     readOnly: true,
   });
 
-  const ws = new WebSocket("ws://localhost:3000");
   const previewFrame = document.getElementById("preview-frame");
+  const previewSection = document.querySelector(".preview-section");
+  const previewBtn = document.getElementById("previewBtn");
+  const ws = new WebSocket("ws://localhost:3000");
   const errorDisplay = document.getElementById("error-display");
-  const timelineList = document.getElementById("timeline-list");
-  const chatInput = document.getElementById("chat-input");
-  const chatOutput = document.getElementById("chat-output");
-  const snippetList = document.getElementById("snippet-list");
   const sensei = document.getElementById("sensei");
-  const languageSelect = document.getElementById("language-select");
-  const applyCorrectionBtn = document.getElementById("apply-correction");
-  const toggleMoodBtn = document.getElementById("toggle-mood");
-  const timeMachineBtn = document.getElementById("time-machine");
-  const duetStyleSelect = document.getElementById("duet-style");
+  const featureSelect = document.getElementById("feature-select");
+  const subFeatureSelect = document.getElementById("sub-feature-select");
   const comeAndCodeBtn = document.getElementById("come-and-code");
   const collabModal = document.getElementById("collab-modal");
-  const closeModal = document.getElementById("close-modal");
+  const closeCollabModal = document.getElementById("close-collab-modal");
   const startCollabBtn = document.getElementById("start-collab");
   const joinCollabBtn = document.getElementById("join-collab");
   const sessionIdInput = document.getElementById("session-id");
   const sessionInfo = document.getElementById("session-info");
   const moodAudio = document.getElementById("mood-audio");
-  const previewCodeBtn = document.getElementById("preview-code");
+  const copyCodeBtn = document.getElementById("copy-code");
+  const promptTextarea = document.getElementById("prompt");
+  const voiceInputBtn = document.getElementById("voiceInput");
+  const screenShareBtn = document.getElementById("screenShare");
   let timeline = [];
-  let snippets = [];
   let moodEnabled = false;
+  let currentModel = "gemini-1.5-flash";
+  let selectedFeature = "aiHelp"; // Default feature
+
+  // Ensure editor view is visible immediately
+  editorView.style.display = "flex";
+
+  // Preview Button Functionality
+  previewBtn.addEventListener("click", () => {
+    const code = aiEditor.getValue();
+    if (code && code !== "// AI suggestions will appear here") {
+      const firstLine = code.trim().split("\n")[0].toLowerCase();
+      if (firstLine.includes("<!doctype html") || firstLine.includes("<html")) {
+        // HTML preview in new tab
+        const htmlWin = window.open("", "_blank");
+        htmlWin.document.write(`
+          <!DOCTYPE html>
+          <html>
+            <head><title>Preview</title></head>
+            <body>${code}</body>
+          </html>
+        `);
+        htmlWin.document.close();
+      } else if (firstLine.includes("<style") || firstLine.includes("css")) {
+        // CSS preview in new tab
+        const cssWin = window.open("", "_blank");
+        cssWin.document.write(`
+          <!DOCTYPE html>
+          <html>
+            <head><title>CSS Preview</title><style>${code}</style></head>
+            <body><div style="margin: 20px;">CSS applied to this div.</div></body>
+          </html>
+        `);
+        cssWin.document.close();
+      } else if (
+        firstLine.includes("<script") ||
+        firstLine.includes("javascript") ||
+        firstLine.includes("function")
+      ) {
+        // JavaScript preview in new tab
+        const jsWin = window.open("", "_blank");
+        jsWin.document.write(`
+          <!DOCTYPE html>
+          <html>
+            <head><title>JS Preview</title></head>
+            <body>
+              <div id="result"></div>
+              <script>${code}</script>
+            </body>
+          </html>
+        `);
+        jsWin.document.close();
+      } else {
+        sensei.textContent =
+          "👩‍💻 Sensei says: Preview not supported for this language!";
+      }
+    } else {
+      sensei.textContent = "👩‍💻 Sensei says: No code to preview!";
+    }
+  });
 
   // Voice Recognition
-  const voiceInputBtn = document.getElementById("voiceInput");
-  const promptTextarea = document.getElementById("prompt");
-
   let recognition;
   if ("webkitSpeechRecognition" in window) {
     recognition = new webkitSpeechRecognition();
@@ -64,8 +118,18 @@ require(["vs/editor/editor.main"], function () {
       promptTextarea.value = transcript;
       sensei.textContent = "👩‍💻 Sensei says: Processing your query...";
       if (transcript) {
-        console.log("Sending prompt:", { type: "prompt", text: transcript });
-        ws.send(JSON.stringify({ type: "prompt", text: transcript }));
+        console.log("Sending prompt:", {
+          type: "prompt",
+          text: transcript,
+          feature: selectedFeature,
+        });
+        ws.send(
+          JSON.stringify({
+            type: "prompt",
+            text: transcript,
+            feature: selectedFeature,
+          })
+        );
         promptTextarea.value = "";
       }
     };
@@ -83,8 +147,12 @@ require(["vs/editor/editor.main"], function () {
   );
 
   // Screen Sharing
-  const screenShareBtn = document.getElementById("screenShare");
-  const screenPreview = document.getElementById("screen-preview");
+  const screenPreview = document.createElement("video");
+  screenPreview.id = "screen-preview";
+  screenPreview.autoplay = true;
+  screenPreview.muted = true;
+  screenPreview.style.display = "none";
+  document.body.appendChild(screenPreview);
 
   screenShareBtn.addEventListener("click", async () => {
     try {
@@ -95,7 +163,6 @@ require(["vs/editor/editor.main"], function () {
       screenPreview.srcObject = stream;
       screenPreview.style.display = "block";
       sensei.textContent = "👩‍💻 Sensei says: Screen sharing started!";
-      speak("Screen sharing started!");
 
       const videoTrack = stream.getVideoTracks()[0];
       const imageCapture = new ImageCapture(videoTrack);
@@ -117,11 +184,9 @@ require(["vs/editor/editor.main"], function () {
       stream.getVideoTracks()[0].onended = () => {
         screenPreview.style.display = "none";
         sensei.textContent = "👩‍💻 Sensei says: Screen sharing stopped!";
-        speak("Screen sharing stopped!");
       };
     } catch (error) {
       sensei.textContent = "👩‍💻 Sensei says: Error: " + error.message;
-      speak("Error: " + error.message);
     }
   });
 
@@ -142,11 +207,6 @@ require(["vs/editor/editor.main"], function () {
     errorDisplay.textContent = "";
 
     switch (data.type) {
-      case "chatResponse":
-        chatOutput.innerHTML += `<p><em>You:</em> ${chatInput.value}<br><em>Sensei:</em> ${data.message}</p>`;
-        chatOutput.scrollTop = chatOutput.scrollHeight;
-        chatInput.value = "";
-        break;
       case "aiCode":
         aiEditor.setValue(data.code);
         addToTimeline(
@@ -154,34 +214,30 @@ require(["vs/editor/editor.main"], function () {
           data.code,
           data.error
         );
-        speak("AI generated code!");
         break;
       case "suggestion":
         aiEditor.setValue(data.code);
         addToTimeline("Suggestion Applied", data.code);
-        speak("Code suggestion ready!");
-        break;
-      case "snippet":
-        addSnippet(data.code, data.explanation);
-        speak("Snippet added!");
         break;
       case "languageOptions":
-        languageSelect.innerHTML = '<option value="">Change Language</option>';
-        data.options.languages.forEach((lang) => {
-          const option = document.createElement("option");
-          option.value = lang;
-          option.textContent = lang;
-          languageSelect.appendChild(option);
-        });
+        if (featureSelect.value === "language") {
+          subFeatureSelect.innerHTML =
+            '<option value="">Select Language</option>';
+          data.options.languages.forEach((lang) => {
+            const option = document.createElement("option");
+            option.value = lang;
+            option.textContent = lang;
+            subFeatureSelect.appendChild(option);
+          });
+          subFeatureSelect.style.display = "block";
+        }
         break;
       case "feedbackAck":
-        chatOutput.innerHTML += `<p><em>Sensei:</em> ${data.message}</p>`;
-        chatOutput.scrollTop = chatOutput.scrollHeight;
+        sensei.textContent = "👩‍💻 Sensei says: Thanks for your feedback!";
         break;
       case "screenCaptureResponse":
         aiEditor.setValue(data.code);
         sensei.textContent = "👩‍💻 Sensei says: Screen processed!";
-        speak("Screen processed!");
         addToTimeline("Screen Capture", data.code);
         break;
       case "sessionCreated":
@@ -204,9 +260,10 @@ require(["vs/editor/editor.main"], function () {
       case "error":
         errorDisplay.textContent = data.message;
         sensei.textContent = "👩‍💻 Sensei says: Error - " + data.message;
-        addToTimeline("Error: " + data.requestTitle, null, data.message);
+        addToTimeline("Error: " + data.requestTitle, null, data.error);
         break;
       case "modelUpdated":
+        currentModel = data.model;
         sensei.textContent = `👩‍💻 Sensei says: Model updated to ${data.model}!`;
         break;
       default:
@@ -219,54 +276,138 @@ require(["vs/editor/editor.main"], function () {
     sensei.textContent = "👩‍💻 Sensei says: Connection lost. Restart the server!";
   };
 
-  // Helper Functions
-  function updatePreview(code, requestTitle) {
-    if (!code || code.trim() === "// AI suggestions will appear here") {
-      sensei.textContent = "👩‍💻 Sensei says: No AI-generated code to preview!";
-      return;
-    }
+  // Feature Selector Logic
+  window.updateFeatureOptions = () => {
+    const feature = featureSelect.value;
+    subFeatureSelect.innerHTML = '<option value="">Select Option</option>';
+    subFeatureSelect.style.display = "block";
 
-    // Detect if the code is web-based (contains HTML, CSS, or JavaScript)
-    const isWebBased = code.match(/<!DOCTYPE|html|head|body|style|script/i);
-    if (isWebBased) {
-      // For HTML content, inject the entire code directly
-      const newTab = window.open("", "_blank");
-      if (newTab) {
-        newTab.document.write(code);
-        newTab.document.close();
-        sensei.textContent = "👩‍💻 Sensei says: Preview opened in new tab!";
+    if (feature === "language") {
+      const code = userEditor.getValue();
+      if (code) {
+        console.log("Sending codeUpdate for language options:", {
+          type: "codeUpdate",
+          code,
+        });
+        ws.send(JSON.stringify({ type: "codeUpdate", code }));
       } else {
         sensei.textContent =
-          "👩‍💻 Sensei says: Unable to open new tab. Allow popups!";
+          "👩‍💻 Sensei says: Please enter code to change language!";
+        subFeatureSelect.style.display = "none";
       }
+    } else if (feature === "duet") {
+      const styles = ["verbose"];
+      styles.forEach((style) => {
+        const option = document.createElement("option");
+        option.value = style;
+        option.textContent = style;
+        subFeatureSelect.appendChild(option);
+      });
+    } else if (feature === "correction") {
+      const option = document.createElement("option");
+      option.value = "apply";
+      option.textContent = "Apply Auto-Correction";
+      subFeatureSelect.appendChild(option);
+    } else if (feature === "mood") {
+      const actions = ["toggle"];
+      actions.forEach((action) => {
+        const option = document.createElement("option");
+        option.value = action;
+        option.textContent = "Toggle Mood Enhancer";
+        subFeatureSelect.appendChild(option);
+      });
+    } else if (feature === "time") {
+      const option = document.createElement("option");
+      option.value = "restore";
+      option.textContent = "Restore Latest Code";
+      subFeatureSelect.appendChild(option);
     } else {
-      // For programming language code, display in terminal
-      const terminalOutput = document.createElement("pre");
-      terminalOutput.textContent = code;
-      terminalOutput.style.margin = "10px 0";
-      terminalOutput.style.padding = "10px";
-      terminalOutput.style.background = "#21262d";
-      terminalOutput.style.borderRadius = "6px";
-      terminalOutput.style.color = "#c9d1d9";
-      errorDisplay.appendChild(terminalOutput);
-      sensei.textContent = "👩‍💻 Sensei says: Code displayed in terminal!";
+      subFeatureSelect.style.display = "none";
     }
-  }
+  };
 
-  function addSnippet(code, explanation) {
-    snippets.push({ code, explanation });
-    const li = document.createElement("li");
-    li.innerHTML = `<strong>${code.slice(0, 20) + "..."}</strong><br><small>${
-      explanation || "No explanation"
-    }</small>`;
-    li.title = code;
-    li.addEventListener("click", () => {
-      userEditor.setValue(code);
-      sensei.textContent = "👩‍💻 Sensei says: Snippet applied!";
-    });
-    snippetList.appendChild(li);
-  }
+  window.executeFeature = () => {
+    const feature = featureSelect.value;
+    const subFeature = subFeatureSelect.value;
 
+    if (!feature || !subFeature) return;
+
+    if (feature === "language") {
+      const code = userEditor.getValue();
+      if (subFeature && code) {
+        console.log("Sending changeLanguage:", {
+          type: "changeLanguage",
+          language: subFeature,
+          code,
+          requestTitle: `Convert to ${subFeature}`,
+        });
+        ws.send(
+          JSON.stringify({
+            type: "changeLanguage",
+            language: subFeature,
+            code,
+            requestTitle: `Convert to ${subFeature}`,
+          })
+        );
+      } else {
+        sensei.textContent =
+          "👩‍💻 Sensei says: Please select a language and ensure code is present!";
+      }
+    } else if (feature === "duet") {
+      const style = subFeature;
+      if (style) {
+        console.log("Sending duetCode:", {
+          type: "duetCode",
+          style,
+          code: userEditor.getValue(),
+          requestTitle: `Duet Style: ${style}`,
+        });
+        ws.send(
+          JSON.stringify({
+            type: "duetCode",
+            style,
+            code: userEditor.getValue(),
+            requestTitle: `Duet Style: ${style}`,
+          })
+        );
+      }
+    } else if (feature === "correction" && subFeature === "apply") {
+      const code = userEditor.getValue();
+      console.log("Sending codeUpdate:", {
+        type: "codeUpdate",
+        code,
+        requestComment: true,
+        requestTitle: "Auto-Correction",
+      });
+      ws.send(
+        JSON.stringify({
+          type: "codeUpdate",
+          code,
+          requestComment: true,
+          requestTitle: "Auto-Correction",
+        })
+      );
+    } else if (feature === "mood" && subFeature === "toggle") {
+      moodEnabled = !moodEnabled;
+      if (moodEnabled) {
+        moodAudio.src =
+          "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
+        moodAudio.play();
+        sensei.textContent = "👩‍💻 Sensei says: Mood enhancer on!";
+      } else {
+        moodAudio.pause();
+        sensei.textContent = "👩‍💻 Sensei says: Mood enhancer off!";
+      }
+    } else if (feature === "time" && subFeature === "restore") {
+      console.log("Sending timeMachine:", {
+        type: "timeMachine",
+        history: timeline,
+      });
+      ws.send(JSON.stringify({ type: "timeMachine", history: timeline }));
+    }
+  };
+
+  // Helper Functions
   function addToTimeline(title, code, error) {
     timeline.push({
       title,
@@ -274,8 +415,6 @@ require(["vs/editor/editor.main"], function () {
       error,
       timestamp: new Date().toLocaleTimeString(),
     });
-
-    // Skip the first line if it matches a language identifier
     const languageIdentifiers = [
       "html",
       "javascript",
@@ -298,10 +437,7 @@ require(["vs/editor/editor.main"], function () {
     ) {
       displayCode = lines.slice(1).join("\n").trim();
     }
-
-    // Use the first 20 characters of the remaining code for the summary
     const summary = displayCode ? displayCode.slice(0, 20) + "..." : "No code";
-
     const li = document.createElement("li");
     li.innerHTML = `<strong>${title}</strong> (${timeline.length})<br><small>${
       error ? `Error: ${error}` : summary
@@ -310,137 +446,40 @@ require(["vs/editor/editor.main"], function () {
     li.addEventListener("click", () => {
       if (code) {
         userEditor.setValue(code);
-        sensei.textContent = `👩‍💻 Sensei says: Loaded ${title} from timeline!`;
+        sensei.textContent = `👩‍💻 Sensei says: Loaded ${title} from history!`;
       } else {
         sensei.textContent = `👩‍💻 Sensei says: No code to load for ${title}!`;
       }
     });
-    timelineList.appendChild(li);
-    timelineList.scrollTop = timelineList.scrollHeight;
-  }
-
-  function speak(text) {
-    if ("speechSynthesis" in window) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = "en-US";
-      window.speechSynthesis.speak(utterance);
-    }
+    historyList.appendChild(li);
   }
 
   // Event Listeners
-  document.getElementById("chat-submit").addEventListener("click", () => {
-    const query = chatInput.value.trim();
-    if (query) {
-      console.log("Sending chatQuery:", { type: "chatQuery", query });
-      ws.send(JSON.stringify({ type: "chatQuery", query }));
-      chatOutput.innerHTML += `<p><em>You:</em> ${query}<br></p>`;
-    }
-  });
-
   document.getElementById("submitPrompt").addEventListener("click", () => {
     const prompt = promptTextarea.value.trim();
     if (prompt) {
-      console.log("Sending prompt:", { type: "prompt", text: prompt });
+      console.log("Sending prompt:", {
+        type: "prompt",
+        text: prompt,
+        feature: "aiHelp",
+      });
       ws.send(
-        JSON.stringify({ type: "prompt", text: prompt, requestTitle: prompt })
+        JSON.stringify({
+          type: "prompt",
+          text: prompt,
+          feature: "aiHelp",
+          requestTitle: prompt,
+        })
       );
       promptTextarea.value = "";
     }
   });
 
-  document.getElementById("fetch-snippet").addEventListener("click", () => {
-    console.log("Sending snippetRequest");
-    ws.send(JSON.stringify({ type: "snippetRequest" }));
-  });
-
-  window.changeLanguage = () => {
-    const language = languageSelect.value;
-    const code = userEditor.getValue();
-    if (language && code) {
-      console.log("Sending changeLanguage:", {
-        type: "changeLanguage",
-        language,
-        code,
-        requestTitle: `Convert to ${language}`,
-      });
-      ws.send(
-        JSON.stringify({
-          type: "changeLanguage",
-          language,
-          code,
-          requestTitle: `Convert to ${language}`,
-        })
-      );
-    } else {
-      sensei.textContent =
-        "👩‍💻 Sensei says: Please select a language and ensure code is present!";
-    }
-  };
-
-  applyCorrectionBtn.addEventListener("click", () => {
-    const code = userEditor.getValue();
-    console.log("Sending codeUpdate:", {
-      type: "codeUpdate",
-      code,
-      requestComment: true,
-      requestTitle: "Auto-Correction",
-    });
-    ws.send(
-      JSON.stringify({
-        type: "codeUpdate",
-        code,
-        requestComment: true,
-        requestTitle: "Auto-Correction",
-      })
-    );
-  });
-
-  toggleMoodBtn.addEventListener("click", () => {
-    moodEnabled = !moodEnabled;
-    if (moodEnabled) {
-      moodAudio.src =
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
-      moodAudio.play();
-      sensei.textContent = "👩‍💻 Sensei says: Mood enhancer on!";
-    } else {
-      moodAudio.pause();
-      sensei.textContent = "👩‍💻 Sensei says: Mood enhancer off!";
-    }
-  });
-
-  timeMachineBtn.addEventListener("click", () => {
-    console.log("Sending timeMachine:", {
-      type: "timeMachine",
-      history: timeline,
-    });
-    ws.send(JSON.stringify({ type: "timeMachine", history: timeline }));
-  });
-
-  window.startDuet = () => {
-    const style = duetStyleSelect.value;
-    if (style) {
-      console.log("Sending duetCode:", {
-        type: "duetCode",
-        style,
-        code: userEditor.getValue(),
-        requestTitle: `Duet Style: ${style}`,
-      });
-      ws.send(
-        JSON.stringify({
-          type: "duetCode",
-          style,
-          code: userEditor.getValue(),
-          requestTitle: `Duet Style: ${style}`,
-        })
-      );
-    }
-  };
-
   comeAndCodeBtn.addEventListener("click", () => {
     collabModal.style.display = "block";
   });
 
-  closeModal.addEventListener("click", () => {
+  closeCollabModal.addEventListener("click", () => {
     collabModal.style.display = "none";
   });
 
@@ -478,27 +517,73 @@ require(["vs/editor/editor.main"], function () {
     }
   });
 
-  previewCodeBtn.addEventListener("click", () => {
-    const aiCode = aiEditor.getValue().trim();
-    if (!aiCode || aiCode === "// AI suggestions will appear here") {
-      sensei.textContent = "👩‍💻 Sensei says: No AI-generated code to preview!";
-      return;
+  copyCodeBtn.addEventListener("click", () => {
+    const code = aiEditor.getValue();
+    if (code && code !== "// AI suggestions will appear here") {
+      navigator.clipboard
+        .writeText(code)
+        .then(() => {
+          sensei.textContent = "👩‍💻 Sensei says: Code copied to clipboard!";
+        })
+        .catch((err) => {
+          sensei.textContent = "👩‍💻 Sensei says: Failed to copy code!";
+          console.error("Copy error:", err);
+        });
     }
-    updatePreview(aiCode, "Preview");
   });
 
-  // Model Selection
-  const modelSelect = document.createElement("select");
-  modelSelect.id = "model-select";
-  modelSelect.innerHTML = `
-    <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-    <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-  `;
-  document.querySelector(".controls-section").prepend(modelSelect);
+  historyBtn.addEventListener("click", () => {
+    historyModal.style.display = "block";
+    historyList.innerHTML = "";
+    timeline.forEach((item) =>
+      addToTimeline(item.title, item.code, item.error)
+    );
+  });
 
-  modelSelect.addEventListener("change", () => {
-    const model = modelSelect.value;
-    console.log("Sending modelUpdate:", { type: "modelUpdate", model });
-    ws.send(JSON.stringify({ type: "modelUpdate", model }));
+  closeHistory.addEventListener("click", () => {
+    historyModal.style.display = "none";
+  });
+
+  // Feedback Handlers
+  document.getElementById("feedback-good").addEventListener("click", () => {
+    const lastCode = aiEditor.getValue();
+    if (lastCode && lastCode !== "// AI suggestions will appear here") {
+      console.log("Sending feedback:", {
+        type: "feedback",
+        query: lastCode,
+        value: "good",
+      });
+      ws.send(
+        JSON.stringify({ type: "feedback", query: lastCode, value: "good" })
+      );
+    }
+  });
+
+  document.getElementById("feedback-bad").addEventListener("click", () => {
+    const lastCode = aiEditor.getValue();
+    if (lastCode && lastCode !== "// AI suggestions will appear here") {
+      console.log("Sending feedback:", {
+        type: "feedback",
+        query: lastCode,
+        value: "bad",
+      });
+      ws.send(
+        JSON.stringify({ type: "feedback", query: lastCode, value: "bad" })
+      );
+    }
+  });
+
+  // AI Help Button
+  document.getElementById("aiHelp").addEventListener("click", () => {
+    const code = userEditor.getValue();
+    if (code) {
+      console.log("Sending aiHelp:", { type: "aiHelp", code });
+      ws.send(
+        JSON.stringify({ type: "aiHelp", code, requestTitle: "AI Help" })
+      );
+    } else {
+      sensei.textContent =
+        "👩‍💻 Sensei says: Please enter some code to get AI help!";
+    }
   });
 });
