@@ -8,32 +8,114 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Serve static files from the 'public' directory
 app.use(express.static(path.join(__dirname, "..", "public")));
 
-// Store collaboration sessions and model preferences
 const sessions = new Map();
-let currentModel = "gemini-1.5-flash"; // Default model
+let currentModel = "gemini-1.5-flash";
 
-// Generate a unique session ID
+// Custom Q-Learning Implementation
+class QLearning {
+  constructor({
+    numStates,
+    numActions,
+    learningRate = 0.1,
+    discountFactor = 0.9,
+  }) {
+    this.qTable = new Array(numStates)
+      .fill(null)
+      .map(() => new Array(numActions).fill(0));
+    this.numStates = numStates;
+    this.numActions = numActions;
+    this.learningRate = learningRate;
+    this.discountFactor = discountFactor;
+    this.epsilon = 0.1; // Exploration rate
+  }
+
+  selectAction(state) {
+    if (Math.random() < this.epsilon) {
+      return Math.floor(Math.random() * this.numActions); // Explore
+    }
+    const qValues = this.qTable[state];
+    return qValues.indexOf(Math.max(...qValues)); // Exploit
+  }
+
+  update(state, action, reward, nextState) {
+    const currentQ = this.qTable[state][action];
+    const maxNextQ = Math.max(...this.qTable[nextState]);
+    const newQ =
+      currentQ +
+      this.learningRate * (reward + this.discountFactor * maxNextQ - currentQ);
+    this.qTable[state][action] = newQ;
+  }
+}
+
+const rl = new QLearning({
+  numStates: 1000,
+  numActions: 5, // generate, correct, snippet, chat, analyze
+});
+let lastState = null;
+let lastAction = null;
+
+function hashState(input) {
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    hash = (hash << 5) + hash + input.charCodeAt(i);
+  }
+  return Math.abs(hash) % 1000;
+}
+
 function generateSessionId() {
   return Math.random().toString(36).substr(2, 9);
 }
 
-// Function to summarize code for timeline title
 async function summarizeCode(prompt, code) {
-  if (prompt.toLowerCase().includes("login page") && code.match(/html|css/i)) {
+  if (prompt.toLowerCase().includes("login page") && code.match(/html|css/i))
     return "Login Page";
-  }
-  // Add more conditions for other types of code
-  if (prompt.toLowerCase().includes("react website")) {
-    return "React Website";
-  }
-  if (prompt.toLowerCase().includes("fibonacci")) {
-    return "Fibonacci Sequence";
-  }
-  // Fallback: Use a generic title based on prompt
+  if (prompt.toLowerCase().includes("react website")) return "React Website";
+  if (prompt.toLowerCase().includes("fibonacci")) return "Fibonacci Sequence";
   return prompt.length > 20 ? prompt.slice(0, 20) + "..." : prompt;
+}
+
+function executeCode(code) {
+  try {
+    const languageIdentifiers = [
+      "javascript",
+      "python",
+      "java",
+      "cpp",
+      "c",
+      "ruby",
+      "go",
+      "rust",
+      "php",
+      "typescript",
+    ];
+    let detectedLanguage = "javascript"; // Default
+    const lines = code.split("\n");
+    for (let lang of languageIdentifiers) {
+      if (lines[0].toLowerCase().includes(lang)) {
+        detectedLanguage = lang;
+        break;
+      }
+    }
+
+    if (detectedLanguage === "javascript") {
+      const script = new Function(code);
+      let result;
+      try {
+        result = script();
+      } catch (e) {
+        result = `Error: ${e.message}`;
+      }
+      return result !== undefined ? result.toString() : "No output";
+    } else if (detectedLanguage === "python") {
+      return "Python output not supported directly (requires runtime)";
+    } else {
+      return "Output not supported for this language";
+    }
+  } catch (e) {
+    return `Execution error: ${e.message}`;
+  }
 }
 
 wss.on("connection", (ws) => {
@@ -45,14 +127,40 @@ wss.on("connection", (ws) => {
       console.log("Received message from client:", data);
       let result;
 
+      const currentState = hashState(
+        data.type + (data.text || data.code || "")
+      );
+      const actions = ["generate", "correct", "snippet", "chat", "analyze"];
+      let actionIndex;
+
+      if (lastState !== null && lastAction !== null) {
+        const reward =
+          data.type === "feedback" ? (data.value === "good" ? 1 : -1) : 0;
+        rl.update(lastState, lastAction, reward, currentState);
+      }
+
+      actionIndex = rl.selectAction(currentState);
+      const chosenAction = actions[actionIndex];
+
       switch (data.type) {
         case "prompt":
-          console.log("Processing prompt with model:", currentModel);
-          result = await analyzeCodeWithGemini(
-            data.text,
-            "generate",
-            currentModel
-          );
+          let mode = "generate";
+          if (data.feature === "chat") mode = "chat";
+          else if (data.feature === "snippet") mode = "snippet";
+          else if (data.feature === "aiHelp") mode = "generate";
+          else if (data.feature === "correction") mode = "correct";
+          else if (data.feature === "come-and-code") {
+            const sessionId = generateSessionId();
+            sessions.set(sessionId, {
+              code: "// Collaborative coding started\n",
+              clients: new Set([ws]),
+            });
+            ws.sessionId = sessionId;
+            ws.send(JSON.stringify({ type: "sessionCreated", sessionId }));
+            return;
+          }
+
+          result = await analyzeCodeWithGemini(data.text, mode, currentModel);
           if (result.startsWith("// Error:")) {
             ws.send(
               JSON.stringify({
@@ -66,20 +174,25 @@ wss.on("connection", (ws) => {
               data.requestTitle || data.text,
               result
             );
+            const output = executeCode(result);
             ws.send(
-              JSON.stringify({ type: "aiCode", code: result, summaryTitle })
+              JSON.stringify({
+                type: "aiCode",
+                code: result,
+                summaryTitle,
+                output,
+              })
             );
           }
           break;
 
         case "codeUpdate":
-          console.log("Processing codeUpdate with model:", currentModel);
+          result = await analyzeCodeWithGemini(
+            data.code,
+            chosenAction,
+            currentModel
+          );
           if (data.requestComment) {
-            result = await analyzeCodeWithGemini(
-              data.code,
-              "autoCorrect",
-              currentModel
-            );
             if (result.startsWith("// Error:")) {
               ws.send(
                 JSON.stringify({
@@ -112,10 +225,9 @@ wss.on("connection", (ws) => {
           break;
 
         case "aiHelp":
-          console.log("Processing aiHelp with model:", currentModel);
           result = await analyzeCodeWithGemini(
             data.code,
-            "fix_or_extend",
+            chosenAction,
             currentModel
           );
           if (result.startsWith("// Error:")) {
@@ -138,10 +250,9 @@ wss.on("connection", (ws) => {
           break;
 
         case "chatQuery":
-          console.log("Processing chatQuery with model:", currentModel);
           result = await analyzeCodeWithGemini(
             data.query,
-            "chat",
+            chosenAction,
             currentModel
           );
           if (result.startsWith("// Error:")) {
@@ -158,21 +269,56 @@ wss.on("connection", (ws) => {
           break;
 
         case "feedback":
-          console.log("Processing feedback");
           updateFeedback(data.query, data.value);
-          ws.send(
-            JSON.stringify({
-              type: "feedbackAck",
-              message: "Thanks for your feedback!",
-            })
-          );
+          if (data.value === "good") {
+            ws.send(
+              JSON.stringify({
+                type: "feedbackAck",
+                message: "Thanks for your feedback!",
+              })
+            );
+          } else if (data.value === "bad") {
+            // Try a better response
+            let betterResult;
+            const originalMode = chosenAction;
+            const fallbackModes = ["snippet", "chat", "correct"].filter(
+              (m) => m !== originalMode
+            );
+            for (let mode of fallbackModes) {
+              betterResult = await analyzeCodeWithGemini(
+                data.query,
+                mode,
+                currentModel
+              );
+              if (!betterResult.startsWith("// Error:")) break;
+            }
+            if (betterResult && !betterResult.startsWith("// Error:")) {
+              const summaryTitle = await summarizeCode(
+                "Improved Response",
+                betterResult
+              );
+              ws.send(
+                JSON.stringify({
+                  type: "betterResponse",
+                  code: betterResult,
+                  summaryTitle,
+                })
+              );
+            } else {
+              ws.send(
+                JSON.stringify({
+                  type: "feedbackAck",
+                  message: "Sorry, unable to improve. Try a different query!",
+                })
+              );
+            }
+          }
           break;
 
         case "snippetRequest":
-          console.log("Processing snippetRequest with model:", currentModel);
           result = await analyzeCodeWithGemini(
             "Provide a beginner-friendly reusable code snippet with explanation",
-            "generate",
+            chosenAction,
             currentModel
           );
           if (result.startsWith("// Error:")) {
@@ -198,10 +344,9 @@ wss.on("connection", (ws) => {
           break;
 
         case "changeLanguage":
-          console.log("Processing changeLanguage with model:", currentModel);
           result = await analyzeCodeWithGemini(
             `Convert this code to ${data.language}:\n${data.code}`,
-            "generate",
+            chosenAction,
             currentModel
           );
           if (result.startsWith("// Error:")) {
@@ -214,14 +359,19 @@ wss.on("connection", (ws) => {
             );
           } else {
             const summaryTitle = await summarizeCode(data.requestTitle, result);
+            const output = executeCode(result);
             ws.send(
-              JSON.stringify({ type: "aiCode", code: result, summaryTitle })
+              JSON.stringify({
+                type: "aiCode",
+                code: result,
+                summaryTitle,
+                output,
+              })
             );
           }
           break;
 
         case "timeMachine":
-          console.log("Processing timeMachine");
           const latestCode = data.history.length
             ? data.history[data.history.length - 1].code
             : "// No previous code";
@@ -235,10 +385,9 @@ wss.on("connection", (ws) => {
           break;
 
         case "duetCode":
-          console.log("Processing duetCode with model:", currentModel);
           result = await analyzeCodeWithGemini(
             `Rewrite this code in a ${data.style} style:\n${data.code}`,
-            "generate",
+            chosenAction,
             currentModel
           );
           if (result.startsWith("// Error:")) {
@@ -251,14 +400,19 @@ wss.on("connection", (ws) => {
             );
           } else {
             const summaryTitle = await summarizeCode(data.requestTitle, result);
+            const output = executeCode(result);
             ws.send(
-              JSON.stringify({ type: "aiCode", code: result, summaryTitle })
+              JSON.stringify({
+                type: "aiCode",
+                code: result,
+                summaryTitle,
+                output,
+              })
             );
           }
           break;
 
         case "startCollab":
-          console.log("Processing startCollab");
           const sessionId = generateSessionId();
           sessions.set(sessionId, {
             code: data.code || "// Collaborative coding started\n",
@@ -270,7 +424,6 @@ wss.on("connection", (ws) => {
           break;
 
         case "joinCollab":
-          console.log("Processing joinCollab with sessionId:", data.sessionId);
           const session = sessions.get(data.sessionId);
           if (session) {
             session.clients.add(ws);
@@ -291,12 +444,10 @@ wss.on("connection", (ws) => {
                 requestTitle: "Join Collab",
               })
             );
-            console.log("Join failed: Invalid session ID", data.sessionId);
           }
           break;
 
         case "collabUpdate":
-          console.log("Processing collabUpdate");
           const collabSession = sessions.get(data.sessionId);
           if (collabSession) {
             collabSession.code = data.code;
@@ -310,7 +461,6 @@ wss.on("connection", (ws) => {
                     fromSelf: false,
                   })
                 );
-                console.log("Broadcast collab update to client");
               }
             });
           } else {
@@ -321,18 +471,13 @@ wss.on("connection", (ws) => {
                 requestTitle: "Collab Update",
               })
             );
-            console.log(
-              "Collab update failed: No session found for ID",
-              data.sessionId
-            );
           }
           break;
 
         case "screenCapture":
-          console.log("Processing screenCapture with model:", currentModel);
           result = await analyzeCodeWithGemini(
             data.image || "Generate code based on this screen capture",
-            "screenCapture",
+            chosenAction,
             currentModel
           );
           if (result.startsWith("// Error:")) {
@@ -345,18 +490,19 @@ wss.on("connection", (ws) => {
             );
           } else {
             const summaryTitle = await summarizeCode("Screen Capture", result);
+            const output = executeCode(result);
             ws.send(
               JSON.stringify({
                 type: "screenCaptureResponse",
                 code: result,
                 summaryTitle,
+                output,
               })
             );
           }
           break;
 
         case "modelUpdate":
-          console.log("Processing modelUpdate");
           currentModel = data.model;
           ws.send(
             JSON.stringify({ type: "modelUpdated", model: currentModel })
@@ -364,7 +510,6 @@ wss.on("connection", (ws) => {
           break;
 
         default:
-          console.log("Unknown message type:", data.type);
           ws.send(
             JSON.stringify({
               type: "error",
@@ -373,6 +518,9 @@ wss.on("connection", (ws) => {
             })
           );
       }
+
+      lastState = currentState;
+      lastAction = actionIndex;
     } catch (error) {
       console.error("WebSocket message error:", error.message);
       ws.send(
