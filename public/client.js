@@ -45,6 +45,7 @@ require(["vs/editor/editor.main"], function () {
   let moodEnabled = false;
   let currentModel = "gemini-1.5-flash";
   let selectedFeature = "aiHelp"; // Default feature
+  let lastResponse = null; // Track the last AI response
 
   // Ensure editor view is visible immediately
   editorView.style.display = "flex";
@@ -55,7 +56,6 @@ require(["vs/editor/editor.main"], function () {
     if (code && code !== "// AI suggestions will appear here") {
       const firstLine = code.trim().split("\n")[0].toLowerCase();
       if (firstLine.includes("<!doctype html") || firstLine.includes("<html")) {
-        // HTML preview in new tab
         const htmlWin = window.open("", "_blank");
         htmlWin.document.write(`
           <!DOCTYPE html>
@@ -66,7 +66,6 @@ require(["vs/editor/editor.main"], function () {
         `);
         htmlWin.document.close();
       } else if (firstLine.includes("<style") || firstLine.includes("css")) {
-        // CSS preview in new tab
         const cssWin = window.open("", "_blank");
         cssWin.document.write(`
           <!DOCTYPE html>
@@ -81,7 +80,6 @@ require(["vs/editor/editor.main"], function () {
         firstLine.includes("javascript") ||
         firstLine.includes("function")
       ) {
-        // JavaScript preview in new tab
         const jsWin = window.open("", "_blank");
         jsWin.document.write(`
           <!DOCTYPE html>
@@ -209,6 +207,7 @@ require(["vs/editor/editor.main"], function () {
     switch (data.type) {
       case "aiCode":
         aiEditor.setValue(data.code);
+        lastResponse = data.code; // Store the last response
         addToTimeline(
           data.summaryTitle || "AI Generated",
           data.code,
@@ -217,6 +216,7 @@ require(["vs/editor/editor.main"], function () {
         break;
       case "suggestion":
         aiEditor.setValue(data.code);
+        lastResponse = data.code; // Store the last response
         addToTimeline("Suggestion Applied", data.code);
         break;
       case "languageOptions":
@@ -235,8 +235,15 @@ require(["vs/editor/editor.main"], function () {
       case "feedbackAck":
         sensei.textContent = "👩‍💻 Sensei says: Thanks for your feedback!";
         break;
+      case "betterResponse":
+        aiEditor.setValue(data.code);
+        lastResponse = data.code; // Update last response
+        sensei.textContent = "👩‍💻 Sensei says: Improved response generated!";
+        addToTimeline("Improved Response", data.code);
+        break;
       case "screenCaptureResponse":
         aiEditor.setValue(data.code);
+        lastResponse = data.code; // Store the last response
         sensei.textContent = "👩‍💻 Sensei says: Screen processed!";
         addToTimeline("Screen Capture", data.code);
         break;
@@ -451,7 +458,7 @@ require(["vs/editor/editor.main"], function () {
         sensei.textContent = `👩‍💻 Sensei says: No code to load for ${title}!`;
       }
     });
-    historyList.appendChild(li);
+    document.getElementById("history-list").appendChild(li);
   }
 
   // Event Listeners
@@ -532,43 +539,41 @@ require(["vs/editor/editor.main"], function () {
     }
   });
 
-  historyBtn.addEventListener("click", () => {
-    historyModal.style.display = "block";
-    historyList.innerHTML = "";
+  document.getElementById("history-btn").addEventListener("click", () => {
+    document.getElementById("history-modal").style.display = "block";
+    document.getElementById("history-list").innerHTML = "";
     timeline.forEach((item) =>
       addToTimeline(item.title, item.code, item.error)
     );
   });
 
-  closeHistory.addEventListener("click", () => {
-    historyModal.style.display = "none";
+  document.getElementById("close-history").addEventListener("click", () => {
+    document.getElementById("history-modal").style.display = "none";
   });
 
   // Feedback Handlers
   document.getElementById("feedback-good").addEventListener("click", () => {
-    const lastCode = aiEditor.getValue();
-    if (lastCode && lastCode !== "// AI suggestions will appear here") {
+    if (lastResponse && lastResponse !== "// AI suggestions will appear here") {
       console.log("Sending feedback:", {
         type: "feedback",
-        query: lastCode,
+        query: lastResponse,
         value: "good",
       });
       ws.send(
-        JSON.stringify({ type: "feedback", query: lastCode, value: "good" })
+        JSON.stringify({ type: "feedback", query: lastResponse, value: "good" })
       );
     }
   });
 
   document.getElementById("feedback-bad").addEventListener("click", () => {
-    const lastCode = aiEditor.getValue();
-    if (lastCode && lastCode !== "// AI suggestions will appear here") {
+    if (lastResponse && lastResponse !== "// AI suggestions will appear here") {
       console.log("Sending feedback:", {
         type: "feedback",
-        query: lastCode,
+        query: lastResponse,
         value: "bad",
       });
       ws.send(
-        JSON.stringify({ type: "feedback", query: lastCode, value: "bad" })
+        JSON.stringify({ type: "feedback", query: lastResponse, value: "bad" })
       );
     }
   });
